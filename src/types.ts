@@ -1,4 +1,6 @@
 import { NativeToolResponse } from "./types/native-tools";
+import { Context } from "hono";
+import { Logger } from "./utils/logger";
 
 // --- Safety Threshold Types ---
 export type SafetyThreshold =
@@ -38,6 +40,21 @@ export interface Env {
 	
 	// Project Discovery Configuration
 	DISABLE_MCP_DISCOVERY?: string; // Disable MCP-based project ID discovery (set to "true" to disable)
+	
+	// Logging Configuration
+	LOG_FORMAT?: "console" | "json"; // Logging format (default: "console")
+	LOG_LEVEL?: "DEBUG" | "INFO" | "WARN" | "ERROR"; // Logging level (default: "INFO")
+}
+
+// --- Extended Context Type with Logger Support ---
+export interface AppContext extends Context<{ Bindings: Env }> {
+	// Logger instance for structured logging
+	set(key: "logger", value: Logger): void;
+	get(key: "logger"): Logger;
+	
+	// Unique trace ID for request tracking
+	set(key: "traceId", value: string): void;
+	get(key: "traceId"): string;
 }
 
 // --- OAuth2 Credentials Interface ---

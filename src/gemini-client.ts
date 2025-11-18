@@ -606,7 +606,9 @@ export class GeminiApiClient {
 						resetIso = details.quotaResetTimeStamp;
 						console.log(`429 → quota resets at ${resetIso}`);
 					}
-				} catch (_) {}
+				} catch {
+
+				}
 
 				// Rotate to next healthy project
 				await this.authManager.rotateCredentials("exhausted", resetIso);

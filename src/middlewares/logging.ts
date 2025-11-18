@@ -1,5 +1,7 @@
-import { Context, Next } from "hono";
-import { Env } from "../types";
+import { Next } from "hono";
+import { AppContext } from "../types";
+import { AuthManager } from "../auth";
+import { createLogger, generateTraceId } from "../utils/logger";
 
 /**
  * Logging middleware for request/response tracking
@@ -8,12 +10,34 @@ import { Env } from "../types";
  * - Request start with method, path, and body (for POST/PUT/PATCH)
  * - Request completion with status code and duration
  * - Masks sensitive data in request bodies
+ *
+ * Uses structured logger with trace ID for request tracking
  */
-export const loggingMiddleware = async (c: Context<{ Bindings: Env }>, next: Next) => {
+export const loggingMiddleware = async (c: AppContext, next: Next) => {
 	const method = c.req.method;
 	const path = c.req.path;
 	const startTime = Date.now();
-	const timestamp = new Date().toISOString();
+	const startTimeMs = performance.now(); // High precision timing
+
+	// Generate unique trace ID for this request
+	const traceId = generateTraceId();
+	
+	// Create logger instance with trace ID
+	const logger = createLogger(c.env, traceId);
+	
+	// Attach logger and traceId to context
+	c.set("logger", logger);
+	c.set("traceId", traceId);
+
+	// Get available accounts metric for this request
+	let accountsMetric = "";
+	try {
+		const authManager = new AuthManager(c.env);
+		const accountsMetricData = await authManager.getAccountsMetric();
+		accountsMetric = ` [${accountsMetricData.available}/${accountsMetricData.total} available accounts]`;
+	} catch (error) {
+		logger.warn("AUTHENTICATION", "Failed to calculate accounts metric", { error: error instanceof Error ? error.message : String(error) });
+	}
 
 	// Log request body for POST/PUT/PATCH requests
 	let bodyLog = "";
@@ -33,13 +57,26 @@ export const loggingMiddleware = async (c: Context<{ Bindings: Env }>, next: Nex
 		}
 	}
 
-	console.log(`[${timestamp}] ${method} ${path}${bodyLog} - Request started`);
+	logger.info("REQUEST", "Request started", {
+		method,
+		path,
+		accountsMetric,
+		bodyLog
+	});
 
 	await next();
 
 	const duration = Date.now() - startTime;
+	const endTimeMs = performance.now();
+	const preciseDuration = endTimeMs - startTimeMs; // High precision duration in milliseconds
 	const status = c.res.status;
-	const endTimestamp = new Date().toISOString();
 
-	console.log(`[${endTimestamp}] ${method} ${path} - Completed with status ${status} (${duration}ms)`);
+	logger.info("REQUEST", "Request completed", {
+		method,
+		path,
+		status,
+		duration,
+		preciseDuration,
+		accountsMetric
+	});
 };

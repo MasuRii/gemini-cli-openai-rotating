@@ -9,8 +9,9 @@ kv_namespaces = [
   { binding = "GEMINI_CLI_KV", id = "c1fc7eef19e242f8b0ef2902d4b08483" }
 ]
 
-# [vars]
-
+[vars]
+LOG_FORMAT = "console"  # Logging format: "console" for human-readable, "json" for machine-parseable
+LOG_LEVEL = "DEBUG"      # Logging level: DEBUG, INFO, WARN, ERROR
 
 # --- Local Development Configuration ---
 # This section configures local development with Docker and miniflare

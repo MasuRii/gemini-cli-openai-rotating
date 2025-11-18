@@ -79,8 +79,7 @@ DebugRoute.post("/test", async (c) => {
 		console.log("Auth test passed");
 
 		// Test project discovery with enhanced error details
-		let projectId: string;
-		let projectDiscoveryInfo = {
+		const projectDiscoveryInfo = {
 			available: false,
 			method: "unknown",
 			error: null as string | null,
@@ -88,7 +87,7 @@ DebugRoute.post("/test", async (c) => {
 		};
 
 		try {
-			projectId = await geminiClient.discoverProjectId();
+			await geminiClient.discoverProjectId();
 			projectDiscoveryInfo.available = true;
 			projectDiscoveryInfo.method = "success";
 			console.log("Project discovery test passed");
@@ -106,7 +105,6 @@ DebugRoute.post("/test", async (c) => {
 			}
 			
 			console.log("Project discovery test failed:", errorMessage);
-			projectId = "unavailable"; // This will cause subsequent API calls to fail appropriately
 		}
 
 		// Test token caching

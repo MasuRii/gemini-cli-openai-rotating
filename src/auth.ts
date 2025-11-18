@@ -65,7 +65,7 @@ export class AuthManager {
 		console.log(`Credential ${index} marked exhausted until ${new Date(resetTime).toISOString()}`);
 	}
 
-	private async isCredentialExhausted(index: number): Promise<boolean> {
+	public async isCredentialExhausted(index: number): Promise<boolean> {
 		const key = `${KV_EXHAUSTED_KEY_PREFIX}${index}`;
 		const value = await this.env.GEMINI_CLI_KV.get(key);
 		if (!value) return false;
@@ -75,6 +75,28 @@ export class AuthManager {
 			await this.env.GEMINI_CLI_KV.delete(key); // cleanup
 		}
 		return exhausted;
+	}
+
+	/**
+	 * Get the current count of available vs total credentials
+	 */
+	public async getAccountsMetric(): Promise<{ available: number; total: number }> {
+		const totalAccounts = Array.from({ length: 100 }, (_, i) => {
+			const key = `GCP_SERVICE_ACCOUNT_${i}` as keyof Env;
+			return (this.env[key] ?? "") as string;
+		}).filter(s => s.length > 0).length;
+
+		let availableAccounts = 0;
+		for (let i = 0; i < totalAccounts; i++) {
+			if (!await this.isCredentialExhausted(i)) {
+				availableAccounts++;
+			}
+		}
+
+		return {
+			available: availableAccounts,
+			total: totalAccounts
+		};
 	}
 
 	private async getNextViableCredentialIndex(currentIndex: number): Promise<number> {

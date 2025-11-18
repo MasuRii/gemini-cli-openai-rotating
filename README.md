@@ -27,6 +27,7 @@ Transform Google's Gemini models into OpenAI-compatible endpoints using Cloudfla
 | `gemini-2.5-pro` | 1M | 65K | ✅ | Latest Gemini 2.5 Pro model with reasoning capabilities |
 | `gemini-2.5-flash` | 1M | 65K | ✅ | Fast Gemini 2.5 Flash model with reasoning capabilities |
 | `gemini-2.5-flash-lite` | 1M | 65K | ✅ | Lightweight version of Gemini 2.5 Flash model with reasoning capabilities |
+| `gemini-3-pro-preview` | 1M | 65K | ✅ | Preview of Gemini 3 Pro model with reasoning capabilities |
 
 > **Note:** Gemini 2.5 models have thinking enabled by default. The API automatically manages this:
 > - When real thinking is disabled (environment), thinking budget is set to 0 to disable it
@@ -611,8 +612,9 @@ The worker supports multimodal conversations with images for vision-capable mode
 - External URLs (may have limitations with some services)
 
 #### Vision-Capable Models
+- `gemini-3-pro-preview`
 - `gemini-2.5-pro`
-- `gemini-2.5-flash` 
+- `gemini-2.5-flash`
 - `gemini-2.0-flash-001`
 - `gemini-2.0-flash-lite-preview-02-05`
 - `gemini-2.0-pro-exp-02-05`
