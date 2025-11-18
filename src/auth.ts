@@ -37,6 +37,9 @@ interface TokenCacheInfo {
 const KV_EXHAUSTED_KEY_PREFIX = "exhausted_until_"; // e.g. exhausted_until_0 → timestamp
 const EXHAUSTION_SAFETY_BUFFER = 120_000; // +2 minutes buffer after official reset
 
+// Project ID caching per credential
+const KV_PROJECT_ID_PREFIX = "project_id_"; // e.g. project_id_0 → project-id-for-credential-0
+
 /**
  * Handles OAuth2 authentication and Google Code Assist API communication.
  * Manages token caching, refresh, and API calls.
@@ -319,6 +322,124 @@ export class AuthManager {
 		}
 
 		return response.json();
+	}
+
+	/**
+	 * A generic method to call a Code Assist API endpoint with retry logic for MCP failures.
+	 */
+	public async callEndpointWithRetry(
+		method: string,
+		body: Record<string, unknown>,
+		maxRetries: number = 3,
+		baseDelay: number = 1000
+	): Promise<unknown> {
+		let lastError: Error | null = null;
+		
+		for (let attempt = 1; attempt <= maxRetries; attempt++) {
+			try {
+				await this.initializeAuth();
+
+				const response = await fetch(`${CODE_ASSIST_ENDPOINT}/${CODE_ASSIST_API_VERSION}:${method}`, {
+					method: "POST",
+					headers: {
+						"Content-Type": "application/json",
+						Authorization: `Bearer ${this.accessToken}`
+					},
+					body: JSON.stringify(body)
+				});
+
+				if (!response.ok) {
+					// Handle 401 with a single retry
+					if (response.status === 401 && attempt === 1) {
+						console.log("Got 401 error, clearing token cache and retrying...");
+						this.accessToken = null;
+						await this.clearTokenCache();
+						await this.initializeAuth();
+						continue; // Retry with fresh token
+					}
+					
+					const errorText = await response.text();
+					
+					// Special handling for MCP service errors (500 errors from Gemini Code Assist)
+					if (response.status === 500 && method === "loadCodeAssist") {
+						console.log(`MCP service error on attempt ${attempt}: ${errorText}`);
+						lastError = new Error(`MCP service unavailable: ${errorText}`);
+						
+						if (attempt < maxRetries) {
+							const delay = baseDelay * Math.pow(2, attempt - 1); // Exponential backoff
+							console.log(`Retrying in ${delay}ms...`);
+							await new Promise(resolve => setTimeout(resolve, delay));
+							continue;
+						}
+					}
+					
+					throw new Error(`API call failed with status ${response.status}: ${errorText}`);
+				}
+
+				return response.json();
+			} catch (error) {
+				lastError = error instanceof Error ? error : new Error(String(error));
+				
+				if (attempt < maxRetries) {
+					const delay = baseDelay * Math.pow(2, attempt - 1);
+					console.log(`Attempt ${attempt} failed, retrying in ${delay}ms:`, lastError.message);
+					await new Promise(resolve => setTimeout(resolve, delay));
+				}
+			}
+		}
+		
+		throw lastError || new Error(`All ${maxRetries} attempts failed for ${method}`);
+	}
+
+	/**
+	 * Cache the discovered project ID for the current credential.
+	 */
+	public async cacheProjectId(projectId: string): Promise<void> {
+		try {
+			const key = `${KV_PROJECT_ID_PREFIX}${this.credsIndex}`;
+			await this.env.GEMINI_CLI_KV.put(key, projectId);
+			console.log(`Cached project ID '${projectId}' for credential ${this.credsIndex}`);
+		} catch (kvError) {
+			console.error("Failed to cache project ID in KV storage:", kvError);
+			// Don't throw an error here as the project ID can still be used
+		}
+	}
+
+	/**
+	 * Get cached project ID for the current credential.
+	 */
+	public async getCachedProjectId(): Promise<string | null> {
+		try {
+			const key = `${KV_PROJECT_ID_PREFIX}${this.credsIndex}`;
+			const projectId = await this.env.GEMINI_CLI_KV.get(key);
+			if (projectId) {
+				console.log(`Found cached project ID '${projectId}' for credential ${this.credsIndex}`);
+				return projectId;
+			}
+		} catch (kvError) {
+			console.log("No cached project ID found or KV error:", kvError);
+		}
+		return null;
+	}
+
+	/**
+	 * Clear cached project ID for the current credential.
+	 */
+	public async clearCachedProjectId(): Promise<void> {
+		try {
+			const key = `${KV_PROJECT_ID_PREFIX}${this.credsIndex}`;
+			await this.env.GEMINI_CLI_KV.delete(key);
+			console.log(`Cleared cached project ID for credential ${this.credsIndex}`);
+		} catch (kvError) {
+			console.log("Error clearing cached project ID:", kvError);
+		}
+	}
+
+	/**
+	 * Get the current credential index (for debugging purposes).
+	 */
+	public getCurrentCredentialIndex(): number {
+		return this.credsIndex;
 	}
 
 	/**
