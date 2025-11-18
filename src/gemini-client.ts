@@ -528,8 +528,12 @@ export class GeminiApiClient {
 		});
 
 		if (!response.ok) {
+			const errorText = await response.text();
+			console.error(`[GeminiAPI] Stream request failed: ${response.status}`, errorText);
+
+			// Handle 401 (same as before)
 			if (response.status === 401 && !isRetry) {
-				console.log("Got 401 error in stream request, clearing token cache and retrying...");
+				console.log("Got 401, clearing token and retrying...");
 				await this.authManager.clearTokenCache();
 				await this.authManager.initializeAuth();
 				yield* this.performStreamRequest(
@@ -539,11 +543,40 @@ export class GeminiApiClient {
 					realThinkingAsContent,
 					originalModel,
 					nativeToolsManager
-				); // Retry once
+				); // retry
 				return;
 			}
 
-			// Handle rate limiting with auto model switching
+			// NEW: Smart handling of 429 RESOURCE_EXHAUSTED
+			if (response.status === 429) {
+				let resetIso: string | undefined;
+
+				try {
+					const errJson = JSON.parse(errorText);
+					const details = errJson.error?.details?.[0]?.metadata;
+					if (details?.quotaResetTimeStamp) {
+						resetIso = details.quotaResetTimeStamp;
+						console.log(`429 → quota resets at ${resetIso}`);
+					}
+				} catch (_) {}
+
+				// Rotate to next healthy project
+				await this.authManager.rotateCredentials("exhausted", resetIso);
+
+				// Retry immediately with new credential
+				console.log("Retrying request with next available credential...");
+				yield* this.performStreamRequest(
+					streamRequest,
+					needsThinkingClose,
+					true, // mark as retry
+					realThinkingAsContent,
+					originalModel,
+					nativeToolsManager
+				);
+				return;
+			}
+
+			// Existing auto model switching (fallback to flash, etc.)
 			if (this.autoSwitchHelper.isRateLimitStatus(response.status) && !isRetry && originalModel) {
 				const fallbackModel = this.autoSwitchHelper.getFallbackModel(originalModel);
 				if (fallbackModel && this.autoSwitchHelper.isEnabled()) {
@@ -575,9 +608,7 @@ export class GeminiApiClient {
 				}
 			}
 
-			const errorText = await response.text();
-			console.error(`[GeminiAPI] Stream request failed: ${response.status}`, errorText);
-			throw new Error(`Stream request failed: ${response.status}`);
+			throw new Error(`Stream request failed: ${response.status}\n${errorText}`);
 		}
 
 		if (!response.body) {

@@ -33,6 +33,10 @@ interface TokenCacheInfo {
 	error?: string;
 }
 
+// KV-based exhaustion tracking constants
+const KV_EXHAUSTED_KEY_PREFIX = "exhausted_until_"; // e.g. exhausted_until_0 → timestamp
+const EXHAUSTION_SAFETY_BUFFER = 120_000; // +2 minutes buffer after official reset
+
 /**
  * Handles OAuth2 authentication and Google Code Assist API communication.
  * Manages token caching, refresh, and API calls.
@@ -46,6 +50,44 @@ export class AuthManager {
 
 	constructor(env: Env) {
 		this.env = env;
+	}
+
+	// KV-based exhaustion tracking methods
+	private async markCredentialExhausted(index: number, resetIso: string): Promise<void> {
+		const resetTime = new Date(resetIso).getTime() + EXHAUSTION_SAFETY_BUFFER;
+		const key = `${KV_EXHAUSTED_KEY_PREFIX}${index}`;
+		await this.env.GEMINI_CLI_KV.put(key, resetTime.toString(), {
+			expirationTtl: Math.floor((resetTime - Date.now()) / 1000) + 3600 // keep entry a bit longer
+		});
+		console.log(`Credential ${index} marked exhausted until ${new Date(resetTime).toISOString()}`);
+	}
+
+	private async isCredentialExhausted(index: number): Promise<boolean> {
+		const key = `${KV_EXHAUSTED_KEY_PREFIX}${index}`;
+		const value = await this.env.GEMINI_CLI_KV.get(key);
+		if (!value) return false;
+		const until = parseInt(value, 10);
+		const exhausted = Date.now() < until;
+		if (!exhausted) {
+			await this.env.GEMINI_CLI_KV.delete(key); // cleanup
+		}
+		return exhausted;
+	}
+
+	private async getNextViableCredentialIndex(currentIndex: number): Promise<number> {
+		const total = this.credentials.length;
+		let attempts = 0;
+		let next = currentIndex;
+
+		while (attempts < total) {
+			next = next >= total - 1 ? 0 : next + 1;
+			attempts++;
+			if (!await this.isCredentialExhausted(next)) {
+				return next;
+			}
+		}
+		// All exhausted → return the one that recovers soonest (still bad, but best effort)
+		return next;
 	}
 
 	/**
@@ -106,24 +148,43 @@ export class AuthManager {
 		}
 	}
 
-	public async rotateCredentials() {
-		this.credentials = Array.from({ length: 100 })
-			.map((_, i) => {
-				return (this.env[("GCP_SERVICE_ACCOUNT_" + i) as keyof Env] ?? "") as string;
-			})
-			.filter((s) => s.length > 0);
+	public async rotateCredentials(reason: "normal" | "exhausted" = "normal", resetIso?: string): Promise<void> {
+		// Load all credentials once
+		if (this.credentials.length === 0) {
+			this.credentials = Array.from({ length: 100 }, (_, i) => {
+				const key = `GCP_SERVICE_ACCOUNT_${i}` as keyof Env;
+				return (this.env[key] ?? "") as string;
+			}).filter(s => s.length > 0);
 
-		this.credsIndex = Math.min(
-			parseInt((await this.env.GEMINI_CLI_KV.get(KV_CREDS_INDEX, "text").catch(() => "0")) ?? "0"),
-			this.credentials.length - 1
-		);
+			if (this.credentials.length === 0) {
+				throw new Error("No GCP_SERVICE_ACCOUNT_* variables found");
+			}
+		}
 
-		console.log(this.credsIndex);
+		// Load current index
+		const savedIndexStr = await this.env.GEMINI_CLI_KV.get(KV_CREDS_INDEX).catch(() => "0");
+		this.credsIndex = Math.min(parseInt(savedIndexStr ?? "0", 10), this.credentials.length - 1);
+		console.log(`Current credential index: ${this.credsIndex}`);
 
-		let nextCredsIndex = this.credsIndex + 1;
-		if (nextCredsIndex > this.credentials.length - 1) nextCredsIndex = 0;
-		console.log("Rotated credentials to", nextCredsIndex);
-		await this.env.GEMINI_CLI_KV.put(KV_CREDS_INDEX, nextCredsIndex.toString());
+		let nextIndex: number;
+
+		if (reason === "exhausted" && resetIso) {
+			// Mark current one as dead
+			await this.markCredentialExhausted(this.credsIndex, resetIso);
+			// Find next healthy one
+			nextIndex = await this.getNextViableCredentialIndex(this.credsIndex);
+		} else {
+			// Normal rotation — just skip exhausted ones
+			nextIndex = await this.getNextViableCredentialIndex(this.credsIndex);
+		}
+
+		this.credsIndex = nextIndex;
+		await this.env.GEMINI_CLI_KV.put(KV_CREDS_INDEX, nextIndex.toString());
+		console.log(`Rotated credentials → ${nextIndex} (${reason === "exhausted" ? "skipped exhausted" : "normal"})`);
+
+		// Reset token state so initializeAuth() runs fresh for new credential
+		this.accessToken = null;
+		this.credsHash = 0;
 	}
 
 	/**
