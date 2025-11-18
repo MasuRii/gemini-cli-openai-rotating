@@ -78,15 +78,58 @@ DebugRoute.post("/test", async (c) => {
 		await authManager.initializeAuth();
 		console.log("Auth test passed");
 
-		// Test project discovery
-		const projectId = await geminiClient.discoverProjectId();
-		console.log("Project discovery test passed");
+		// Test project discovery with enhanced error details
+		let projectId: string;
+		let projectDiscoveryInfo = {
+			available: false,
+			method: "unknown",
+			error: null as string | null,
+			retry_count: 0
+		};
+
+		try {
+			projectId = await geminiClient.discoverProjectId();
+			projectDiscoveryInfo.available = true;
+			projectDiscoveryInfo.method = "success";
+			console.log("Project discovery test passed");
+		} catch (discoveryError: unknown) {
+			const errorMessage = discoveryError instanceof Error ? discoveryError.message : String(discoveryError);
+			projectDiscoveryInfo.error = errorMessage;
+			
+			// Determine which method was attempted
+			if (c.env.GEMINI_PROJECT_ID) {
+				projectDiscoveryInfo.method = "environment_variable";
+			} else if (c.env.DISABLE_MCP_DISCOVERY === "true") {
+				projectDiscoveryInfo.method = "disabled_via_env";
+			} else {
+				projectDiscoveryInfo.method = "mcp_discovery_failed";
+			}
+			
+			console.log("Project discovery test failed:", errorMessage);
+			projectId = "unavailable"; // This will cause subsequent API calls to fail appropriately
+		}
+
+		// Test token caching
+		const tokenInfo = await authManager.getCachedTokenInfo();
 
 		return c.json({
 			status: "ok",
-			message: "Authentication and project discovery successful",
-			project_available: !!projectId
-			// Removed actual projectId for security
+			message: "Authentication and project discovery test completed",
+			authentication: {
+				working: true,
+				token_cached: tokenInfo.cached,
+				token_expiry_info: tokenInfo.cached ? {
+					cached_at: tokenInfo.cached_at,
+					expires_at: tokenInfo.expires_at,
+					time_until_expiry_seconds: tokenInfo.time_until_expiry_seconds
+				} : null
+			},
+			project_discovery: projectDiscoveryInfo,
+			configuration: {
+				has_project_id_env: !!c.env.GEMINI_PROJECT_ID,
+				mcp_discovery_disabled: c.env.DISABLE_MCP_DISCOVERY === "true",
+				has_openai_key: !!c.env.OPENAI_API_KEY
+			}
 		});
 	} catch (e: unknown) {
 		const errorMessage = e instanceof Error ? e.message : String(e);
@@ -94,8 +137,11 @@ DebugRoute.post("/test", async (c) => {
 		return c.json(
 			{
 				status: "error",
-				message: errorMessage
-				// Removed stack trace and detailed error message for security
+				message: errorMessage,
+				authentication: {
+					working: false,
+					error: "Authentication failed - check your GCP_SERVICE_ACCOUNT credentials"
+				}
 			},
 			500
 		);

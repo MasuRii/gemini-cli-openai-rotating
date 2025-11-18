@@ -35,6 +35,9 @@ export interface Env {
 	ENABLE_INLINE_CITATIONS?: string; // Enable inline citations in responses (default: false)
 	INCLUDE_GROUNDING_METADATA?: string; // Include grounding metadata in responses (default: true)
 	INCLUDE_SEARCH_ENTRY_POINT?: string; // Include search entry point HTML (default: false)
+	
+	// Project Discovery Configuration
+	DISABLE_MCP_DISCOVERY?: string; // Disable MCP-based project ID discovery (set to "true" to disable)
 }
 
 // --- OAuth2 Credentials Interface ---

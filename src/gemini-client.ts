@@ -102,32 +102,80 @@ export class GeminiApiClient {
 
 	/**
 	 * Discovers the Google Cloud project ID. Uses the environment variable if provided.
+	 * IMPORTANT: Different Google accounts have access to different projects, so we cache
+	 * project IDs per credential to avoid cross-account project ID conflicts.
 	 */
 	public async discoverProjectId(): Promise<string> {
+		// 1. Check environment variable first (highest priority)
 		if (this.env.GEMINI_PROJECT_ID) {
+			console.log("Using project ID from GEMINI_PROJECT_ID environment variable");
 			return this.env.GEMINI_PROJECT_ID;
 		}
-		if (this.projectId) {
+
+		// 2. Check if MCP discovery is explicitly disabled
+		if (this.env.DISABLE_MCP_DISCOVERY === "true") {
+			console.warn("MCP discovery is disabled via DISABLE_MCP_DISCOVERY environment variable");
+			throw new Error(
+				"Could not discover project ID. MCP discovery is disabled. Set the GEMINI_PROJECT_ID environment variable."
+			);
+		}
+
+		// 3. Check for credential-specific cached project ID
+		const cachedProjectId = await this.authManager.getCachedProjectId();
+		if (cachedProjectId) {
+			this.projectId = cachedProjectId;
+			console.log(`Using credential-specific cached project ID: ${this.projectId}`);
 			return this.projectId;
 		}
 
+		// 4. Check if we have a local cached project ID (for backward compatibility)
+		if (this.projectId) {
+			console.log("Using local cached project ID");
+			return this.projectId;
+		}
+
+		// 5. Try MCP discovery with retry logic
 		try {
 			const initialProjectId = "default-project";
-			const loadResponse = (await this.authManager.callEndpoint("loadCodeAssist", {
+			console.log("Attempting project ID discovery via MCP service...");
+			
+			const loadResponse = (await this.authManager.callEndpointWithRetry("loadCodeAssist", {
 				cloudaicompanionProject: initialProjectId,
 				metadata: { duetProject: initialProjectId }
-			})) as ProjectDiscoveryResponse;
+			}, 3)) as ProjectDiscoveryResponse;
 
 			if (loadResponse.cloudaicompanionProject) {
 				this.projectId = loadResponse.cloudaicompanionProject;
+				
+				// Cache the project ID per credential for future use
+				await this.authManager.cacheProjectId(this.projectId);
+				
+				console.log(`Successfully discovered and cached project ID: ${this.projectId} for credential ${this.authManager.getCurrentCredentialIndex()}`);
 				return loadResponse.cloudaicompanionProject;
 			}
-			throw new Error("Project ID discovery failed. Please set the GEMINI_PROJECT_ID environment variable.");
+			
+			throw new Error("Project ID discovery returned empty result");
 		} catch (error: unknown) {
 			const errorMessage = error instanceof Error ? error.message : String(error);
-			console.error("Failed to discover project ID:", errorMessage);
+			console.error("MCP project ID discovery failed:", errorMessage);
+			
+			// 6. Fallback to a reasonable default when MCP service is unavailable
+			if (errorMessage.includes("MCP service unavailable") || errorMessage.includes("500")) {
+				console.warn("MCP service appears to be unavailable, using fallback project ID: default-project");
+				
+				// For Google Cloud projects, "default-project" often works as a fallback
+				// when the specific project discovery is not available
+				this.projectId = "default-project";
+				
+				// Cache the fallback project ID per credential
+				await this.authManager.cacheProjectId(this.projectId);
+				
+				return this.projectId;
+			}
+			
+			// 7. Provide detailed error guidance
 			throw new Error(
-				"Could not discover project ID. Make sure you're authenticated and consider setting GEMINI_PROJECT_ID."
+				`Could not discover project ID: ${errorMessage}. Set the GEMINI_PROJECT_ID environment variable.`
 			);
 		}
 	}
