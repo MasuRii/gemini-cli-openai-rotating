@@ -353,7 +353,7 @@ export class AuthManager {
 		method: string,
 		body: Record<string, unknown>,
 		maxRetries: number = 3,
-		baseDelay: number = 1000
+		baseDelay: number = 100
 	): Promise<unknown> {
 		let lastError: Error | null = null;
 		
