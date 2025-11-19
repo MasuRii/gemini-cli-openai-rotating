@@ -176,19 +176,42 @@ OpenAIRoute.post("/chat/completions", async (c) => {
 					});
 
 					for await (const chunk of geminiStream) {
+						if (c.req.raw.signal.aborted) {
+							console.log("Client disconnected, stopping stream processing");
+							break;
+						}
 						await writer.write(chunk);
 					}
 					console.log("Stream completed successfully");
 					await writer.close();
 				} catch (streamError: unknown) {
 					const errorMessage = streamError instanceof Error ? streamError.message : String(streamError);
-					console.error("Stream error:", errorMessage);
-					// Try to write an error chunk before closing
-					await writer.write({
-						type: "text",
-						data: `Error: ${errorMessage}`
-					});
-					await writer.close();
+
+					// Handle network disconnection gracefully
+					if (
+						errorMessage.includes("Network connection lost") ||
+						errorMessage.includes("aborted") ||
+						errorMessage.includes("The operation was aborted")
+					) {
+						console.warn("Stream interrupted by client disconnection");
+					} else {
+						console.error("Stream error:", errorMessage);
+						// Try to write an error chunk before closing (only if connection is likely still open)
+						try {
+							await writer.write({
+								type: "text",
+								data: `Error: ${errorMessage}`
+							});
+						} catch (writeError) {
+							// Ignore errors when trying to send error message to closed stream
+						}
+					}
+					
+					try {
+						await writer.close();
+					} catch (closeError) {
+						// Ignore errors when closing an already closed/errored stream
+					}
 				}
 			})();
 

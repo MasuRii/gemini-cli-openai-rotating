@@ -624,6 +624,9 @@ export class GeminiApiClient {
 				// Rotate to next healthy project
 				await this.authManager.rotateCredentials("exhausted", resetIso);
 
+				// Initialize auth for the new credential
+				await this.authManager.initializeAuth();
+
 				// Retry immediately with new credential
 				console.log("Retrying request with next available credential...");
 				yield* this.performStreamRequest(
