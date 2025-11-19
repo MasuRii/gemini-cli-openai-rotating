@@ -610,8 +610,22 @@ export class GeminiApiClient {
 
 				}
 
+				// If resetIso is provided, wait until quota reset before retrying
+				if (resetIso) {
+					const resetTime = new Date(resetIso).getTime();
+					const waitTime = resetTime - Date.now();
+					
+					if (waitTime > 0 && waitTime < 60000) { // Only wait if less than 60 seconds
+						console.log(`Waiting ${Math.ceil(waitTime / 1000)}s for quota reset...`);
+						await new Promise(resolve => setTimeout(resolve, waitTime));
+					}
+				}
+
 				// Rotate to next healthy project
 				await this.authManager.rotateCredentials("exhausted", resetIso);
+
+				// Initialize auth for the new credential
+				await this.authManager.initializeAuth();
 
 				// Retry immediately with new credential
 				console.log("Retrying request with next available credential...");

@@ -108,11 +108,17 @@ export function createOpenAIStreamTransformer(model: string): TransformStream<St
 					break;
 				case "real_thinking":
 					if (typeof chunk.data === "string") {
+						// Map to reasoning_content for standard compliance with thinking models
+						delta.reasoning_content = chunk.data;
+						// Keep reasoning for backward compatibility
 						delta.reasoning = chunk.data;
 					}
 					break;
 				case "reasoning":
 					if (isReasoningData(chunk.data)) {
+						// Map to reasoning_content for standard compliance with thinking models
+						delta.reasoning_content = chunk.data.reasoning;
+						// Keep reasoning for backward compatibility
 						delta.reasoning = chunk.data.reasoning;
 					}
 					break;
