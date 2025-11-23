@@ -72,3 +72,10 @@ ENABLE_AUTO_MODEL_SWITCHING=true
 
 # Optional: Include search entry point HTML (default: false)
 # INCLUDE_SEARCH_ENTRY_POINT=false
+
+# --- Model Access Restriction ---
+# Restrict specific models to specific accounts.
+# Format: MODEL_RESTRICTION_<model_id>=<account_indices_comma_separated>
+# If not specified, the model is available to all accounts.
+# Example: Restrict gemini-3-pro-preview to accounts 0 and 2
+# MODEL_RESTRICTION_gemini-3-pro-preview=0,2
