@@ -622,7 +622,8 @@ export class GeminiApiClient {
 				}
 
 				// Rotate to next healthy project
-				await this.authManager.rotateCredentials("exhausted", resetIso);
+				const modelId = (streamRequest as { model: string }).model;
+				await this.authManager.rotateCredentials("exhausted", resetIso, modelId);
 
 				// Initialize auth for the new credential
 				await this.authManager.initializeAuth();

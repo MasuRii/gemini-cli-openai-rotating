@@ -78,6 +78,29 @@ export class AuthManager {
 	}
 
 	/**
+	 * Checks if a credential index is allowed for a specific model.
+	 * Reads from environment variables like MODEL_RESTRICTION_<model_id>=0,2
+	 */
+	public isCredentialAllowedForModel(index: number, modelId?: string): boolean {
+		if (!modelId) return true;
+
+		// Construct the environment variable key
+		// Replace hyphens with underscores for better env var compatibility if needed,
+		// but the requirement says "MODEL_RESTRICTION_gemini-3-pro-preview", so we use the model ID directly.
+		// We might want to normalize it if needed, but for now let's stick to exact match.
+		const envKey = `MODEL_RESTRICTION_${modelId}` as keyof Env;
+		const allowedIndicesStr = this.env[envKey] as string | undefined;
+
+		if (!allowedIndicesStr) {
+			// No restriction defined for this model, so all accounts are allowed
+			return true;
+		}
+
+		const allowedIndices = allowedIndicesStr.split(",").map((s) => parseInt(s.trim(), 10));
+		return allowedIndices.includes(index);
+	}
+
+	/**
 	 * Get the current count of available vs total credentials
 	 */
 	public async getAccountsMetric(): Promise<{ available: number; total: number }> {
@@ -99,19 +122,50 @@ export class AuthManager {
 		};
 	}
 
-	private async getNextViableCredentialIndex(currentIndex: number): Promise<number> {
+	private async getNextViableCredentialIndex(currentIndex: number, modelId?: string): Promise<number> {
 		const total = this.credentials.length;
 		let attempts = 0;
 		let next = currentIndex;
 
+		// We need to find a credential that is:
+		// 1. Not exhausted
+		// 2. Allowed for the requested model (if modelId is provided)
+
 		while (attempts < total) {
 			next = next >= total - 1 ? 0 : next + 1;
 			attempts++;
-			if (!await this.isCredentialExhausted(next)) {
+
+			const isAllowed = this.isCredentialAllowedForModel(next, modelId);
+			if (isAllowed && !(await this.isCredentialExhausted(next))) {
 				return next;
 			}
 		}
-		// All exhausted → return the one that recovers soonest (still bad, but best effort)
+
+		// If we're here, it means we couldn't find a "perfect" candidate (allowed AND healthy).
+		// We should prioritize "allowed" over "healthy".
+		// If all allowed accounts are exhausted, we return the first allowed account (even if exhausted),
+		// effectively putting the request "on hold" or failing with exhaustion error later.
+
+		// Reset search to find any allowed account
+		if (modelId) {
+			attempts = 0;
+			next = currentIndex;
+			while (attempts < total) {
+				next = next >= total - 1 ? 0 : next + 1;
+				attempts++;
+				if (this.isCredentialAllowedForModel(next, modelId)) {
+					console.warn(
+						`All allowed accounts for model ${modelId} are exhausted. Returning allowed account ${next} despite exhaustion.`
+					);
+					return next;
+				}
+			}
+			// If NO accounts are allowed (misconfiguration?), fall back to current or 0
+			console.error(`No allowed accounts found for model ${modelId}. Check configuration.`);
+			return 0;
+		}
+
+		// All exhausted (and no model restriction) → return the one that recovers soonest (still bad, but best effort)
 		return next;
 	}
 
@@ -173,13 +227,17 @@ export class AuthManager {
 		}
 	}
 
-	public async rotateCredentials(reason: "normal" | "exhausted" = "normal", resetIso?: string): Promise<void> {
+	public async rotateCredentials(
+		reason: "normal" | "exhausted" = "normal",
+		resetIso?: string,
+		modelId?: string
+	): Promise<void> {
 		// Load all credentials once
 		if (this.credentials.length === 0) {
 			this.credentials = Array.from({ length: 100 }, (_, i) => {
 				const key = `GCP_SERVICE_ACCOUNT_${i}` as keyof Env;
 				return (this.env[key] ?? "") as string;
-			}).filter(s => s.length > 0);
+			}).filter((s) => s.length > 0);
 
 			if (this.credentials.length === 0) {
 				throw new Error("No GCP_SERVICE_ACCOUNT_* variables found");
@@ -191,21 +249,36 @@ export class AuthManager {
 		this.credsIndex = Math.min(parseInt(savedIndexStr ?? "0", 10), this.credentials.length - 1);
 		console.log(`Current credential index: ${this.credsIndex}`);
 
+		// Initial check: Is the current credential allowed for this model?
+		// If not, we MUST rotate, regardless of exhaustion status.
+		const currentAllowed = this.isCredentialAllowedForModel(this.credsIndex, modelId);
+		if (!currentAllowed && reason === "normal") {
+			console.log(
+				`Current credential ${this.credsIndex} is not allowed for model ${modelId}. Forcing rotation.`
+			);
+			// We treat this as a "normal" rotation but ensure we pick a valid one next
+		}
+
 		let nextIndex: number;
 
 		if (reason === "exhausted" && resetIso) {
 			// Mark current one as dead
 			await this.markCredentialExhausted(this.credsIndex, resetIso);
 			// Find next healthy one
-			nextIndex = await this.getNextViableCredentialIndex(this.credsIndex);
+			nextIndex = await this.getNextViableCredentialIndex(this.credsIndex, modelId);
 		} else {
 			// Normal rotation — just skip exhausted ones
-			nextIndex = await this.getNextViableCredentialIndex(this.credsIndex);
+			// Also ensures we pick one allowed for the model
+			nextIndex = await this.getNextViableCredentialIndex(this.credsIndex, modelId);
 		}
 
 		this.credsIndex = nextIndex;
 		await this.env.GEMINI_CLI_KV.put(KV_CREDS_INDEX, nextIndex.toString());
-		console.log(`Rotated credentials → ${nextIndex} (${reason === "exhausted" ? "skipped exhausted" : "normal"})`);
+		console.log(
+			`Rotated credentials → ${nextIndex} (${reason === "exhausted" ? "skipped exhausted" : "normal"})${
+				modelId ? ` [Model: ${modelId}]` : ""
+			}`
+		);
 
 		// Reset token state so initializeAuth() runs fresh for new credential
 		this.accessToken = null;
